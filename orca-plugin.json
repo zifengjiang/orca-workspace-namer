@@ -1,0 +1,116 @@
+{
+  "manifestVersion": 2,
+  "id": "workspace-namer",
+  "name": "Workspace Namer",
+  "version": "0.1.2",
+  "description": "Renames a workspace once its agent stops, using what the agent was asked to do. The agent itself is never interrupted.",
+  "engines": {
+    "orca": ">=1.4.248"
+  },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "capabilities": [
+    {
+      "kind": "workspace:read"
+    },
+    {
+      "kind": "workspace:write"
+    },
+    {
+      "kind": "agent:read"
+    },
+    {
+      "kind": "terminal:read"
+    },
+    {
+      "kind": "storage:own"
+    },
+    {
+      "kind": "settings:own"
+    }
+  ],
+  "contributes": {
+    "events": [
+      {
+        "on": "agent.status.changed"
+      }
+    ],
+    "hooks": [
+      {
+        "event": "agent.prompt.before"
+      }
+    ],
+    "commands": [
+      {
+        "id": "namer.renameThis",
+        "title": "Rename this workspace after its task",
+        "when": "workspace"
+      },
+      {
+        "id": "namer.tidy",
+        "title": "Rename workspaces still called after their folder",
+        "when": "global"
+      }
+    ],
+    "settings": [
+      {
+        "key": "enabled",
+        "title": "Rename when an agent stops",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "labels",
+        "title": "Project prefix map (JSON)",
+        "type": "string",
+        "multiline": true,
+        "default": "{}",
+        "description": "Maps a project or folder name to the prefix a name starts with, for example {\"acme-api\":\"Acme\"}."
+      },
+      {
+        "key": "useModel",
+        "title": "Name with a local agent CLI",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "namerAgent",
+        "title": "CLI used for naming (auto, pi, claude, codex)",
+        "type": "string",
+        "default": "auto",
+        "description": "auto tries pi, then claude, then codex on PATH."
+      },
+      {
+        "key": "maxTaskChars",
+        "title": "Longest task part (characters)",
+        "type": "number",
+        "default": 16,
+        "minimum": 4,
+        "maximum": 40
+      },
+      {
+        "key": "namerModel",
+        "title": "Model for naming",
+        "type": "string",
+        "default": "",
+        "description": "Passed to the naming CLI; empty uses its default."
+      },
+      {
+        "key": "timeoutMs",
+        "title": "Naming timeout (ms)",
+        "type": "number",
+        "default": 60000,
+        "minimum": 5000,
+        "maximum": 300000
+      }
+    ]
+  },
+  "author": {
+    "name": "zifengjiang",
+    "url": "https://github.com/zifengjiang"
+  },
+  "repository": "https://github.com/zifengjiang/orca-workspace-namer",
+  "homepage": "https://github.com/zifengjiang/orca-workspace-namer",
+  "license": "MIT"
+}
