@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 
-import { composeName, fallbackName, labelFor, looksDefault, taskFromPrompt } from './namer'
+import { composeName, taskFromPrompt } from './namer'
 
 /** Runs a command with stdin closed: a CLI that reads stdin would otherwise wait forever. */
 function runCommand(bin: string, args: string[], timeoutMs: number): Promise<string> {
@@ -30,24 +30,19 @@ function runCommand(bin: string, args: string[], timeoutMs: number): Promise<str
 }
 
 const PROMPT_KEY = (terminalId: string) => `prompt:${terminalId}`
-const SAMPLE_KEY = (workspaceId: string) => `sample:${workspaceId}`
+const SAMPLE_KEY = (terminalId: string) => `sample:${terminalId}`
+const NAMED_KEY = (terminalId: string) => `named:${terminalId}`
+
+const SAMPLE_FRESH_MS = 30 * 60_000
+const SAMPLE_KEEP_MS = 6 * 60 * 60_000
 
 type Settings = {
   enabled: boolean
   useModel: boolean
   namerAgent: string
-  labels: Record<string, string>
   maxTaskChars: number
   namerModel: string
   timeoutMs: number
-}
-
-type Workspace = {
-  id: string
-  name: string
-  path: string
-  branch: string | null
-  project: string | null
 }
 
 export default async function activate(orca: any) {
@@ -55,17 +50,10 @@ export default async function activate(orca: any) {
 
   const readSettings = async (): Promise<Settings> => {
     const raw = (await orca.settings.get()) ?? {}
-    let labels: Record<string, string> = {}
-    try {
-      labels = JSON.parse(raw.labels ?? '{}')
-    } catch {
-      labels = {}
-    }
     return {
       enabled: raw.enabled !== false,
       useModel: raw.useModel !== false,
       namerAgent: String(raw.namerAgent ?? 'auto'),
-      labels,
       maxTaskChars: Number(raw.maxTaskChars) || 16,
       namerModel: String(raw.namerModel ?? ''),
       timeoutMs: Number(raw.timeoutMs) || 60_000,
@@ -83,149 +71,90 @@ export default async function activate(orca: any) {
   })
 
   orca.events.on('agent.status.changed', (event: any) => {
-    if (!event?.workspaceId) return
-    if (event.state === 'working') return snapshotTerminal(orca, event)
+    if (!event?.terminalId) return
+    if (event.state === 'working') return snapshotTerminal(orca, event.terminalId)
     if (event.state !== 'done') return
-    void nameWorkspace(orca, readSettings, inflight, event.workspaceId, event.terminalId, {
-      useModel: true,
-      force: false,
-    })
+    const target = { terminalId: event.terminalId as string, sessionId: event.sessionId as string | undefined }
+    void nameConversation(orca, readSettings, inflight, target, { force: false })
       .catch(() => {})
-      .finally(() => forget(orca, event))
+      .finally(() => forget(orca, event.terminalId))
   })
 
-  // Preview answers "what would this be called?" without touching the sidebar,
-  // so the naming rules can be checked against a real prompt.
-  orca.panels.handle('preview', async (input: any) => {
-    const settings = await readSettings()
-    const list = await orca.host.call('workspace.list', {})
-    const workspaces: Workspace[] = list?.workspaces ?? list ?? []
-    const workspace = workspaces.find(
-      (candidate) => candidate.id === input?.workspaceId || (input?.path && candidate.path === input.path),
-    )
-    if (!workspace) {
-      return { ok: false, reason: 'workspace_missing', saw: workspaces.slice(0, 3).map((w) => w.id), count: workspaces.length }
-    }
-    const label = labelFor(settings.labels, workspace.project, workspace.path)
-    const prompt = String(input?.prompt ?? '') || (await readPrompt(orca, workspace.id, null))
-    const task = taskFromPrompt(prompt)
-    const name = settings.useModel
-      ? await askModel(settings, { label, branch: workspace.branch, task, path: workspace.path })
-      : null
-    const proposed = name ?? fallbackName(label, workspace.branch, workspace.path, settings.maxTaskChars)
-    if (input?.apply && proposed) await rename(orca, workspace.id, proposed)
-    return { ok: true, applied: Boolean(input?.apply), current: workspace.name, task, name: proposed }
-  })
-
+  // Names the focused workspace's agent tab now, for checking the rules against a real prompt.
   orca.commands.register('namer.renameThis', async () => {
-    const context = await orca.host.call('workspace.readContext', {})
-    const list = await orca.host.call('workspace.list', {})
-    const workspaces: Workspace[] = list?.workspaces ?? list ?? []
-    const current = workspaces.find((workspace) => workspace.path === context?.path)
-    if (!current) return { ok: false, reason: 'no_focused_workspace' }
-    return nameWorkspace(orca, readSettings, inflight, current.id, null, { useModel: true, force: true })
-  })
-
-  orca.commands.register('namer.tidy', async () => {
-    const settings = await readSettings()
-    const list = await orca.host.call('workspace.list', {})
-    const workspaces: Workspace[] = list?.workspaces ?? list ?? []
-    const renamed: string[] = []
-    for (const workspace of workspaces) {
-      if (!looksDefault(workspace.name, workspace.path, workspace.branch)) continue
-      const result = await nameWorkspace(orca, readSettings, inflight, workspace.id, null, {
-        useModel: false,
-        force: false,
-        settings,
-      }).catch(() => null)
-      if (result?.ok && result.name) renamed.push(result.name)
-    }
-    return { ok: true, renamed }
+    const list = await orca.host.call('agents.list', {})
+    const agents: { terminalId: string | null; sessionId?: string | null }[] = list?.agents ?? []
+    const agent = agents.find((candidate) => candidate.terminalId)
+    if (!agent?.terminalId) return { ok: false, reason: 'no_agent' }
+    const target = { terminalId: agent.terminalId, sessionId: agent.sessionId ?? undefined }
+    return nameConversation(orca, readSettings, inflight, target, { force: true })
   })
 }
 
-/** The task is spent once the agent has finished with it. */
-async function forget(orca: any, event: any) {
-  await orca.storage.delete(SAMPLE_KEY(event.workspaceId)).catch(() => {})
-  if (event.terminalId) await orca.storage.delete(PROMPT_KEY(event.terminalId)).catch(() => {})
+/** The sampled screen is spent once the agent has finished with it. */
+async function forget(orca: any, terminalId: string) {
+  await orca.storage.delete(SAMPLE_KEY(terminalId)).catch(() => {})
 }
 
 /** Keep whatever the terminal shows at agent start; it is the only copy of a hand-typed prompt. */
-async function snapshotTerminal(orca: any, event: any) {
-  if (!event.terminalId) return
+async function snapshotTerminal(orca: any, terminalId: string) {
   try {
-    const previous = await readSample(orca, event.workspaceId)
+    const previous = await readSample(orca, terminalId)
     // A later turn redraws the screen without the prompt, so keep the first snapshot for a while.
     if (previous && Date.now() - previous.at < SAMPLE_FRESH_MS) return
-    const snapshot = await orca.host.call('terminal.read', { terminalId: event.terminalId, maxLines: 40 })
+    const snapshot = await orca.host.call('terminal.read', { terminalId, maxLines: 40 })
     const text = Array.isArray(snapshot?.lines) ? snapshot.lines.join('\n') : String(snapshot ?? '')
     if (text) {
-      await orca.storage.set(SAMPLE_KEY(event.workspaceId), { text: String(text).slice(0, 4000), at: Date.now() })
+      await orca.storage.set(SAMPLE_KEY(terminalId), { text: String(text).slice(0, 4000), at: Date.now() })
     }
   } catch {
     // Reading is best effort: a missing terminal must never affect the agent.
   }
 }
 
-async function nameWorkspace(
+async function nameConversation(
   orca: any,
   readSettings: () => Promise<Settings>,
   inflight: Set<string>,
-  workspaceId: string,
-  terminalId: string | null,
-  options: { useModel: boolean; force: boolean; settings?: Settings },
+  target: { terminalId: string; sessionId?: string },
+  options: { force: boolean },
 ) {
-  if (inflight.has(workspaceId)) return { ok: false, reason: 'in_flight' }
-  inflight.add(workspaceId)
+  const { terminalId, sessionId } = target
+  if (inflight.has(terminalId)) return { ok: false, reason: 'in_flight' }
+  inflight.add(terminalId)
   try {
-    const settings = options.settings ?? (await readSettings())
+    const settings = await readSettings()
     if (!settings.enabled && !options.force) return { ok: false, reason: 'disabled' }
 
-    const list = await orca.host.call('workspace.list', {})
-    const workspaces: Workspace[] = list?.workspaces ?? list ?? []
-    const workspace = workspaces.find((candidate) => candidate.id === workspaceId)
-    if (!workspace) {
-      return { ok: false, reason: 'workspace_missing', saw: workspaces.slice(0, 3).map((w) => w.id), count: workspaces.length }
-    }
-    if (!options.force && !looksDefault(workspace.name, workspace.path, workspace.branch)) {
-      return { ok: false, reason: 'already_named' }
-    }
-
-    const label = labelFor(settings.labels, workspace.project, workspace.path)
-    const prompt = await readPrompt(orca, workspaceId, terminalId)
+    const prompt = await readPrompt(orca, terminalId)
     const task = taskFromPrompt(prompt)
-    if (!task && !workspace.branch) return { ok: false, reason: 'nothing_to_name_from' }
+    if (!task) return { ok: false, reason: 'no_task' }
 
-    let name: string | null = null
-    if (options.useModel && settings.useModel) {
-      name = await askModel(settings, { label, branch: workspace.branch, task, path: workspace.path })
-    }
-    name ??= fallbackName(label, workspace.branch, workspace.path, settings.maxTaskChars)
+    const named = settings.useModel ? await askModel(settings, task) : null
+    const name = named ?? composeName(task, settings.maxTaskChars)
     if (!name) return { ok: false, reason: 'no_name' }
-    if (name === workspace.name) return { ok: false, reason: 'unchanged' }
 
-    await rename(orca, workspaceId, name)
-    return { ok: true, name, from: workspace.name }
+    const previous = await orca.storage.get(NAMED_KEY(terminalId)).catch(() => null)
+    if (previous === name) return { ok: false, reason: 'unchanged' }
+
+    await rename(terminalId, sessionId, name)
+    await orca.storage.set(NAMED_KEY(terminalId), name).catch(() => {})
+    return { ok: true, name }
   } finally {
-    inflight.delete(workspaceId)
+    inflight.delete(terminalId)
   }
 }
 
-async function readPrompt(orca: any, workspaceId: string, terminalId: string | null): Promise<string> {
-  if (terminalId) {
-    const hooked = await orca.storage.get(PROMPT_KEY(terminalId)).catch(() => null)
-    if (hooked) return String(hooked)
-  }
-  const sample = await readSample(orca, workspaceId)
+async function readPrompt(orca: any, terminalId: string): Promise<string> {
+  const hooked = await orca.storage.get(PROMPT_KEY(terminalId)).catch(() => null)
+  if (hooked) return String(hooked)
+  const sample = await readSample(orca, terminalId)
   return sample?.text ?? ''
 }
 
-const SAMPLE_FRESH_MS = 30 * 60_000
-const SAMPLE_KEEP_MS = 6 * 60 * 60_000
-
 /** Samples written by earlier versions were a bare string. */
-async function readSample(orca: any, workspaceId: string): Promise<{ text: string; at: number } | null> {
-  const stored = await orca.storage.get(SAMPLE_KEY(workspaceId)).catch(() => null)
+async function readSample(orca: any, terminalId: string): Promise<{ text: string; at: number } | null> {
+  const stored = await orca.storage.get(SAMPLE_KEY(terminalId)).catch(() => null)
   if (!stored) return null
   if (typeof stored === 'string') return { text: stored, at: 0 }
   const sample = stored as { text?: unknown; at?: unknown }
@@ -235,29 +164,23 @@ async function readSample(orca: any, workspaceId: string): Promise<{ text: strin
   return { text: sample.text, at }
 }
 
-async function askModel(
-  settings: Settings,
-  context: { label: string; branch: string | null; task: string; path: string },
-): Promise<string | null> {
+async function askModel(settings: Settings, task: string): Promise<string | null> {
   const instruction = [
-    '你在给一个开发工作区起名字，让人一眼看出这次在做什么。',
-    `只输出一行，格式：${context.label} · <任务>。任务用中文，最多 ${settings.maxTaskChars} 个字，`,
-    '不要引号、不要解释、不要句号、不要重复项目名。',
+    '你在给一个开发对话标签起名字，让人一眼看出这次在做什么。',
+    `只输出任务本身，最多 ${settings.maxTaskChars} 个字，`,
+    '不要项目名、不要引号、不要解释、不要句号。',
     '',
-    `项目：${context.label}`,
-    `分支：${context.branch ?? '(无)'}`,
-    `目录：${context.path}`,
-    `用户的任务：${context.task || '(未知，按分支推断)'}`,
+    `用户的任务：${task}`,
   ].join('\n')
 
   for (const agent of agentOrder(settings.namerAgent)) {
     for (const bin of binCandidates(agent.bin)) {
       try {
         const stdout = await runCommand(bin, agent.args(instruction, settings.namerModel), settings.timeoutMs)
-        const name = composeName(stdout, context.label, settings.maxTaskChars)
+        const name = composeName(stdout, settings.maxTaskChars)
         if (name) return name
       } catch {
-        // ENOENT or timeout: try the next candidate, then fall back to the branch name.
+        // ENOENT or timeout: try the next candidate, then name from the prompt alone.
       }
     }
   }
@@ -287,10 +210,19 @@ function binCandidates(name: string): string[] {
   return [...candidates.filter((candidate) => existsSync(candidate)), name]
 }
 
-async function rename(orca: any, workspaceId: string, name: string) {
-  if (orca.host.has('workspace.rename')) {
-    await orca.host.call('workspace.rename', { workspaceId, name })
+/**
+ * Titles are Orca's to set; a plugin has no host method for them, so the CLI does it. A tracked
+ * session carries the conversation name shown in the tab, the sidebar and Session History; a
+ * terminal without one still gets its tab title.
+ */
+async function rename(terminalId: string, sessionId: string | undefined, name: string) {
+  const bin = ['/usr/local/bin/orca', '/opt/homebrew/bin/orca', '/Applications/Orca.app/Contents/Resources/bin/orca'].find(
+    (candidate) => existsSync(candidate),
+  )
+  const orca = bin ?? 'orca'
+  if (sessionId) {
+    await runCommand(orca, ['chat', 'rename', '--session', sessionId, '--name', name], 30_000)
     return
   }
-  await runCommand('orca', ['worktree', 'set', '--worktree', `id:${workspaceId}`, '--display-name', name], 30_000)
+  await runCommand(orca, ['terminal', 'rename', '--terminal', terminalId, '--title', name], 30_000)
 }

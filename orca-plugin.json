@@ -1,9 +1,9 @@
 {
   "manifestVersion": 2,
   "id": "workspace-namer",
-  "name": "Workspace Namer",
-  "version": "0.1.2",
-  "description": "Renames a workspace once its agent stops, using what the agent was asked to do. The agent itself is never interrupted.",
+  "name": "Tab Namer",
+  "version": "0.2.0",
+  "description": "Renames a conversation tab once its agent stops, using what that conversation was asked to do. Workspaces keep their names.",
   "engines": {
     "orca": ">=1.4.248"
   },
@@ -13,9 +13,6 @@
   "capabilities": [
     {
       "kind": "workspace:read"
-    },
-    {
-      "kind": "workspace:write"
     },
     {
       "kind": "agent:read"
@@ -44,13 +41,8 @@
     "commands": [
       {
         "id": "namer.renameThis",
-        "title": "Rename this workspace after its task",
+        "title": "Rename this conversation after its task",
         "when": "workspace"
-      },
-      {
-        "id": "namer.tidy",
-        "title": "Rename workspaces still called after their folder",
-        "when": "global"
       }
     ],
     "settings": [
@@ -59,14 +51,6 @@
         "title": "Rename when an agent stops",
         "type": "boolean",
         "default": true
-      },
-      {
-        "key": "labels",
-        "title": "Project prefix map (JSON)",
-        "type": "string",
-        "multiline": true,
-        "default": "{}",
-        "description": "Maps a project or folder name to the prefix a name starts with, for example {\"acme-api\":\"Acme\"}."
       },
       {
         "key": "useModel",
@@ -82,19 +66,19 @@
         "description": "auto tries pi, then claude, then codex on PATH."
       },
       {
-        "key": "maxTaskChars",
-        "title": "Longest task part (characters)",
-        "type": "number",
-        "default": 16,
-        "minimum": 4,
-        "maximum": 40
-      },
-      {
         "key": "namerModel",
         "title": "Model for naming",
         "type": "string",
         "default": "",
         "description": "Passed to the naming CLI; empty uses its default."
+      },
+      {
+        "key": "maxTaskChars",
+        "title": "Longest tab name (characters)",
+        "type": "number",
+        "default": 16,
+        "minimum": 4,
+        "maximum": 40
       },
       {
         "key": "timeoutMs",

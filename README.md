@@ -1,8 +1,8 @@
-# Workspace Namer
+# Tab Namer
 
-An Orca plugin that renames a workspace once its agent stops, using what the agent was actually asked to do — so the sidebar says `acme-api · Fix BLE reconnect` instead of `feature/ble-reconnect`.
+An Orca plugin that renames a conversation once its agent stops, using what that conversation was actually asked to do — so a tab reads `修复蓝牙重连` instead of `..ode27-upgrade`.
 
-The agent is never asked to name anything. It finishes, the plugin reads the task it was given, and renames the workspace behind it.
+The agent is never asked to name anything. It finishes, the plugin reads the task that conversation was given, and renames its tab behind it. Workspaces keep whatever name they have.
 
 ## Install
 
@@ -16,41 +16,40 @@ Or from a local folder while developing:
 orca plugin dev load ./workspace-namer
 ```
 
-It runs Node.js code with your user account's access to the machine and asks for these capabilities: read workspaces and agent status, read terminal output, rename workspaces, and its own storage and settings.
+It runs Node.js code with your user account's access to the machine and asks for these capabilities: read workspaces and agent status, read terminal output, and its own storage and settings.
 
 ## What it does
 
-When an agent in a workspace turns `done`:
+When an agent in a terminal tab turns `done`:
 
-1. Skips the workspace if it already has a name of the form `Project · Task`.
-2. Takes the task from the prompt Orca submitted (`agent.prompt.before`), or — for a prompt a person typed into the agent's own TUI — from a terminal snapshot taken while the agent was starting.
-3. Asks a local agent CLI to turn that into one short line, then renames the workspace.
-
-If no CLI answers, the name falls back to the branch, then the folder.
+1. Takes the task from the prompt Orca submitted (`agent.prompt.before`), or — for a prompt a person typed into the agent's own TUI — from a terminal snapshot taken while the agent was starting. Both are kept per terminal, so two tabs in one workspace never borrow each other's task.
+2. Turns it into one short line with a local agent CLI, or from the prompt itself when no CLI answers.
+3. Renames that conversation: `chat rename` on the agent session Orca tracks (the name shows in the tab, the sidebar and Session History), or `terminal rename` on the tab when the terminal runs no tracked session. A conversation whose name already says this is left alone, so a later turn only renames when the task itself changed.
 
 Renaming only ever happens after the agent stops, so it cannot disturb work in progress, and it applies to agents Orca did not launch too — anything that reports agent status in a terminal.
+
+A tab holding split panes is renamed as a whole; the plugin does not touch individual pane titles.
 
 ## Settings
 
 | Key | Meaning |
 | --- | --- |
 | `enabled` | Rename when an agent stops |
-| `useModel` | Use a local agent CLI; off means name from the branch alone |
+| `useModel` | Use a local agent CLI; off names from the prompt alone |
 | `namerAgent` | `auto`, `pi`, `claude` or `codex` |
 | `namerModel` | Model passed to that CLI; empty uses its default |
-| `labels` | JSON map from project or folder name to the prefix, e.g. `{"acme-api":"Acme"}` |
-| `maxTaskChars` | Longest task part, 16 by default |
+| `maxTaskChars` | Longest tab name, 16 by default |
 | `timeoutMs` | Naming timeout, 60 s by default |
 
 ## Commands
 
-- **Rename this workspace after its task** — rename the focused workspace now.
-- **Rename workspaces still called after their folder** — sweep every workspace whose name is still its folder or branch, without calling a model.
+- **Rename this conversation after its task** — rename the focused workspace's agent tab now.
 
 ## Requirements
 
 - Orca `>=1.4.248`.
 - One of `pi`, `claude` or `codex` on `PATH` for model naming; `auto` tries them in that order. Locations such as `~/.local/bin`, `/opt/homebrew/bin` and `~/.nvm/versions/node/*/bin` are checked because a GUI app's `PATH` often misses them.
+- Orca's own CLI for the rename itself: plugin host APIs have no way to set a name, so `orca chat rename` and `orca terminal rename` do it. `/usr/local/bin`, `/opt/homebrew/bin` and the app bundle are checked.
 
 ## Development
 

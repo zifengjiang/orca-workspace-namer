@@ -1,21 +1,6 @@
 import { assert, test } from 'orca/testing'
 
-import { composeName, fallbackName, humanizeBranch, labelFor, looksDefault, taskFromPrompt } from './namer'
-
-test('a workspace named after its folder or branch counts as unrenamed', () => {
-  assert.equal(looksDefault('feature-upgrade', '/Users/dev/orca/workspaces/acme-api/feature-upgrade', null), true)
-  assert.equal(looksDefault('octocat/app-4.6.8', '/tmp/w', 'octocat/app-4.6.8'), true)
-  assert.equal(looksDefault('agent-task', '/tmp/w', null), true)
-  assert.equal(looksDefault('Acme · App 升级', '/tmp/w', 'octocat/app-4.6.8'), false)
-  assert.equal(looksDefault('Home · Notes', '/Users/dev', null), false)
-})
-
-test('branch names lose their owner and conventional prefixes', () => {
-  assert.equal(humanizeBranch('octocat/app-4.6.8'), 'app 4.6.8')
-  assert.equal(humanizeBranch('feat/ble-autoprobe'), 'ble autoprobe')
-  assert.equal(humanizeBranch('bug123456-location-agent'), '123456 location agent')
-  assert.equal(humanizeBranch(null), '')
-})
+import { composeName, taskFromPrompt } from './namer'
 
 test('a prompt contributes its first real sentence without pleasantries', () => {
   assert.equal(taskFromPrompt('帮我整理一下我的工作区吧\n顺带看看 hook'), '整理一下我的工作区吧')
@@ -23,31 +8,17 @@ test('a prompt contributes its first real sentence without pleasantries', () => 
   assert.equal(taskFromPrompt(''), '')
 })
 
-test('a name is always one line, unquoted, and prefixed with its project', () => {
-  assert.equal(composeName('Acme · App 升级。', 'Acme', 16), 'Acme · App 升级')
-  assert.equal(composeName('"name: Acme · 整理工作区"', 'Acme', 16), 'Acme · 整理工作区')
-  assert.equal(composeName('   \n 1. 蓝牙自动探测  \n', 'Acme', 16), 'Acme · 蓝牙自动探测')
-  assert.equal(composeName('随便说点什么', 'Acme', 16), 'Acme · 随便说点什么')
-  assert.equal(composeName('', 'Acme', 16), null)
+test('a tab title is one line, unquoted, without a project prefix', () => {
+  assert.equal(composeName('App 升级。', 16), 'App 升级')
+  assert.equal(composeName('"name: 整理工作区"', 16), '整理工作区')
+  assert.equal(composeName('   \n 1. 蓝牙自动探测  \n', 16), '蓝牙自动探测')
+  assert.equal(composeName('hm-operator · 修 CR 评审通知', 16), '修 CR 评审通知')
+  assert.equal(composeName('', 16), null)
 })
 
-test('a task part longer than the limit is cut, not the project prefix', () => {
-  const name = composeName('Acme · 这是一个特别特别长的任务标题需要被截断', 'Acme', 6)
-  assert.equal(name, 'Acme · 这是一个特别')
-})
-
-test('the fallback name comes from the branch, then the folder', () => {
-  assert.equal(fallbackName('Acme', 'octocat/app-4.6.8', '/tmp/w', 16), 'Acme · app 4.6.8')
-  assert.equal(fallbackName('Acme', null, '/Users/dev/projects/handoff-service', 19), 'Acme · handoff-service')
-  assert.equal(fallbackName('Acme', 'octocat/app-4.6.8', '/tmp/w', 4), 'Acme · app')
-})
-
-test('the project prefix follows the label map, then the project, then the folder', () => {
-  const labels = { 'acme-api': 'Acme', 'handoff-service': 'Tools' }
-  assert.equal(labelFor(labels, 'acme-api', '/x/acme-api'), 'Acme')
-  assert.equal(labelFor(labels, null, '/Users/dev/projects/handoff-service'), 'Tools')
-  assert.equal(labelFor(labels, 'web', '/x/web'), 'web')
-  assert.equal(labelFor(labels, null, '/x/unknown'), 'unknown')
+test('a title longer than the limit is cut', () => {
+  assert.equal(composeName('这是一个特别特别长的任务标题需要被截断', 6), '这是一个特别')
+  assert.equal(composeName('这是一个特别长的任务标题', 4), '这是一个')
 })
 
 const CLAUDE_TUI = ` ▐▛███▛█   Claude Code v2.1.311
